@@ -133,13 +133,23 @@ async function createJsonCompletion(messages, schema, maxTokens) {
     // grammar, then parse and validate the JSON in JavaScript.
     return await engine.chat.completions.create({
       ...base,
-      response_format: { type: "json_object" }
+      messages: [
+        ...messages,
+        {
+          role: "system",
+          content: "Modo de compatibilidade: responda com um único objeto JSON válido, sem markdown, sem crases e sem texto antes ou depois do JSON."
+        }
+      ]
     });
   }
 }
 
 function parseJsonContent(response) {
-  const text = response.choices?.[0]?.message?.content || "";
+  let text = response.choices?.[0]?.message?.content || "";
+  text = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  const first = text.indexOf("{");
+  const last = text.lastIndexOf("}");
+  if (first >= 0 && last > first) text = text.slice(first, last + 1);
   return JSON.parse(text);
 }
 
@@ -181,7 +191,7 @@ $("#load").onclick = async () => {
   $("#loadStatus").className = "status warn";
   $("#loadStatus").textContent = "Preparando carregamento...";
   try {
-    const appConfig = { ...webllm.prebuiltAppConfig, cacheBackend: "indexeddb" };
+    const appConfig = { ...webllm.prebuiltAppConfig, cacheBackend: "cache" };
     engine = await webllm.CreateMLCEngine($("#model").value, {
       appConfig,
       initProgressCallback: (p) => {
