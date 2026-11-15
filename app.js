@@ -133,13 +133,15 @@ async function createJsonCompletion(messages, schema, maxTokens) {
     // grammar, then parse and validate the JSON in JavaScript.
     return await engine.chat.completions.create({
       ...base,
-      messages: [
-        ...messages,
-        {
-          role: "system",
-          content: "Modo de compatibilidade: responda com um único objeto JSON válido, sem markdown, sem crases e sem texto antes ou depois do JSON."
+      messages: messages.map((message, index) => {
+        if (index === 0 && message.role === "system") {
+          return {
+            ...message,
+            content: `${message.content}\nModo de compatibilidade: responda com um único objeto JSON válido, sem markdown, sem crases e sem texto antes ou depois do JSON.`
+          };
         }
-      ]
+        return message;
+      })
     });
   }
 }
