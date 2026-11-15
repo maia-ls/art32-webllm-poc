@@ -137,7 +137,7 @@ async function createJsonCompletion(messages, schema, maxTokens) {
         if (index === 0 && message.role === "system") {
           return {
             ...message,
-            content: `${message.content}\nModo de compatibilidade: responda com um único objeto JSON válido, sem markdown, sem crases e sem texto antes ou depois do JSON.`
+            content: `${message.content}\nModo de compatibilidade: responda com um único objeto JSON válido, sem markdown, sem crases e sem texto antes ou depois do JSON. Use exatamente estas chaves na raiz: object, entities, relations, attributes, ranges, steps, unresolvedSegments. Todas, exceto object, devem ser arrays. Não use uma chave externa como claim, result ou analysis.`
           };
         }
         return message;
@@ -153,6 +153,80 @@ function parseJsonContent(response) {
   const last = text.lastIndexOf("}");
   if (first >= 0 && last > first) text = text.slice(first, last + 1);
   return JSON.parse(text);
+}
+
+
+function firstDefined(object, keys) {
+  for (const key of keys) {
+    if (object && object[key] !== undefined && object[key] !== null) return object[key];
+  }
+  return undefined;
+}
+
+function asArray(value) {
+  if (Array.isArray(value)) return value;
+  if (value === undefined || value === null || value === "") return [];
+  if (typeof value === "object") {
+    return Object.entries(value).map(([key, item]) => {
+      if (item && typeof item === "object" && !Array.isArray(item)) return { id: key, ...item };
+      return { id: key, value: String(item) };
+    });
+  }
+  return [value];
+}
+
+function normalizeClaimOutput(raw) {
+  let source = raw;
+  const wrapper = firstDefined(raw, ["claim", "reivindicacao", "reivindicação", "result", "resultado", "extraction", "extracao", "extração"]);
+  if (wrapper && typeof wrapper === "object" && !Array.isArray(wrapper)) source = wrapper;
+
+  const normalized = {
+    object: String(firstDefined(source, ["object", "objeto", "claimObject", "objetoReivindicado"]) || ""),
+    entities: asArray(firstDefined(source, ["entities", "entidades", "components", "componentes"])),
+    relations: asArray(firstDefined(source, ["relations", "relacoes", "relações", "relationships"])),
+    attributes: asArray(firstDefined(source, ["attributes", "atributos", "properties", "propriedades"])),
+    ranges: asArray(firstDefined(source, ["ranges", "faixas", "intervals", "intervalos"])),
+    steps: asArray(firstDefined(source, ["steps", "etapas", "methodSteps"])),
+    unresolvedSegments: asArray(firstDefined(source, ["unresolvedSegments", "segmentosNaoResolvidos", "segmentos_não_resolvidos", "unresolved", "pendencias", "pendências"]))
+  };
+
+  // Normalize common Portuguese field names inside arrays without inventing content.
+  normalized.entities = normalized.entities.map((item, index) => {
+    if (typeof item === "string") return { id: `E${index + 1}`, type: item, mentions: [item], sourceText: item };
+    return {
+      id: String(firstDefined(item, ["id", "identifier", "identificador"]) || `E${index + 1}`),
+      type: String(firstDefined(item, ["type", "tipo", "name", "nome"]) || ""),
+      mentions: asArray(firstDefined(item, ["mentions", "mencoes", "menções"])).map(String),
+      sourceText: String(firstDefined(item, ["sourceText", "textoFonte", "texto_fonte", "source"]) || "")
+    };
+  });
+  normalized.relations = normalized.relations.map((item) => ({
+    subject: String(firstDefined(item, ["subject", "sujeito", "from", "origem"]) || ""),
+    predicate: String(firstDefined(item, ["predicate", "predicado", "relation", "relacao", "relação"]) || ""),
+    object: String(firstDefined(item, ["object", "objeto", "to", "destino"]) || ""),
+    sourceText: String(firstDefined(item, ["sourceText", "textoFonte", "texto_fonte", "source"]) || "")
+  }));
+  normalized.attributes = normalized.attributes.map((item) => ({
+    subject: String(firstDefined(item, ["subject", "sujeito"]) || ""),
+    property: String(firstDefined(item, ["property", "propriedade", "attribute", "atributo"]) || ""),
+    value: String(firstDefined(item, ["value", "valor"]) ?? ""),
+    sourceText: String(firstDefined(item, ["sourceText", "textoFonte", "texto_fonte", "source"]) || "")
+  }));
+  normalized.ranges = normalized.ranges.map((item) => ({
+    property: String(firstDefined(item, ["property", "propriedade"]) || ""),
+    min: Number(firstDefined(item, ["min", "minimum", "minimo", "mínimo"])),
+    max: Number(firstDefined(item, ["max", "maximum", "maximo", "máximo"])),
+    unit: String(firstDefined(item, ["unit", "unidade"]) || ""),
+    sourceText: String(firstDefined(item, ["sourceText", "textoFonte", "texto_fonte", "source"]) || "")
+  }));
+  normalized.steps = normalized.steps.map((item, index) => ({
+    order: Number(firstDefined(item, ["order", "ordem", "number", "numero", "número"]) || index + 1),
+    action: String(firstDefined(item, ["action", "acao", "ação", "verb", "verbo"]) || ""),
+    object: String(firstDefined(item, ["object", "objeto", "complement", "complemento"]) || ""),
+    sourceText: String(firstDefined(item, ["sourceText", "textoFonte", "texto_fonte", "source"]) || "")
+  }));
+  normalized.unresolvedSegments = normalized.unresolvedSegments.map((item) => typeof item === "string" ? item : JSON.stringify(item));
+  return normalized;
 }
 
 function validateBasicClaim(value) {
@@ -224,9 +298,10 @@ $("#extract").onclick = async () => {
       claimSchema,
       1200
     );
-    lastResult = parseJsonContent(response);
+    const rawResult = parseJsonContent(response);
+    lastResult = normalizeClaimOutput(rawResult);
     const validationErrors = validateBasicClaim(lastResult);
-    $("#output").textContent = JSON.stringify(lastResult, null, 2);
+    $("#output").textContent = JSON.stringify({ normalized: lastResult, raw: rawResult }, null, 2);
     $("#inferenceStatus").className = "status " + (validationErrors.length ? "warn" : "ok");
     $("#inferenceStatus").textContent = validationErrors.length
       ? `Extração concluída, mas a validação encontrou: ${validationErrors.join("; ")}`
